@@ -5,6 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Lakbay | Commuter Dashboard</title>
   <link rel="stylesheet" href="https://unpkg.com/leaflet/dist/leaflet.css" />
+  <link rel="stylesheet" href="https://unpkg.com/leaflet-routing-machine/dist/leaflet-routing-machine.css" />
   <style>
     body { margin: 0; font-family: Arial, sans-serif; display: flex; flex-direction: column; height: 100vh; }
     header { background: #f0f0f0; padding: 10px 20px; }
@@ -15,6 +16,15 @@
     .map-section { text-align: center; width: 80%; max-width: 900px; }
     #map { width: 100%; height: 500px; border: 2px solid #000; margin-top: 20px; border-radius: 8px; }
     #location-status { margin-top: 10px; font-size: 0.9em; color: gray; }
+    .controls { margin-top: 10px; }
+    .controls button { margin-right: 8px; padding: 8px 18px; border-radius: 5px; border: none; font-size: 1em; }
+    #highlight-btn { background-color: #007bff; color: white; }
+    #clear-btn { background-color: #dc3545; color: white; }
+    #show-btn { background-color: #28a745; color: white; }
+    #track-btn { background-color: #007bff; color: white; padding: 12px 24px; margin: 12px 0;}
+    #routes-list button { margin-left:12px; background:#dc3545; color:white; border:none; border-radius:4px; padding:3px 9px; cursor:pointer;}
+    #routes-list { margin-bottom:10px; }
+    .route-info { margin-bottom:4px; }
     footer { background: #f0f0f0; text-align: center; padding: 10px 0; }
   </style>
 </head>
@@ -34,48 +44,163 @@
   <main>
     <section class="map-section">
       <h1>Commuter Dashboard</h1>
-      <p>Track your current location and plan your route along major roads.</p>
       <div id="map"></div>
-      <p id="location-status">Waiting to start...</p>
-      <div style="margin-top:10px;">
-        <button onclick="showAllRoutes()">Show All Routes</button>
+      <div id="location-status">Waiting to start...</div>
+      <button id="track-btn">Start Tracking My Location Now</button>
+      <div class="controls">
+        <button id="show-btn">Show All Routes</button>
+        <button id="highlight-btn">Highlight Nearest Route</button>
+        <button id="clear-btn">Clear Destination</button>
       </div>
+      <div id="routes-list"></div>
     </section>
   </main>
   <footer>
     <p>© 2025 Lakbay. All rights reserved.</p>
   </footer>
   <script src="https://unpkg.com/leaflet/dist/leaflet.js"></script>
+  <script src="https://unpkg.com/leaflet-routing-machine/dist/leaflet-routing-machine.js"></script>
   <script>
-    const map = L.map('map').setView([14.7959, 120.8789], 14);
+    const map = L.map('map').setView([14.7959, 120.8789], 13);
     L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
       attribution: '&copy; OpenStreetMap contributors'
     }).addTo(map);
 
-    let assignedRouteLine = null;
+    let routeLines = [];
     let jeepneyMarker = null;
-    // Hardcoded demo routes
-    const jeepneyRoutes = [
-      { name: "Route 1", points: [[14.7960,120.8750],[14.7980,120.8780],[14.8000,120.8800]], color: "orange" },
-      { name: "Route 2", points: [[14.7950,120.8800],[14.7970,120.8830],[14.7990,120.8850]], color: "green" }
-    ];
-    let demoRouteLines = [];
+    let userMarker = null;
 
-    // Always fetch and draw assigned route
-    function fetchAndDrawAssignedRoute() {
-      fetch('/api/assigned-route')
-        .then(res => res.json())
+    // Draw all saved driver routes as RoutingMachine using waypoints (not snapped route!)
+    function drawSavedRoutes() {
+      clearRoutes();
+      fetch('/api/routes')
+        .then(res => {
+          if (!res.ok) throw new Error('Network response was not ok');
+          return res.json();
+        })
         .then(data => {
-          if (assignedRouteLine) map.removeLayer(assignedRouteLine);
-          if (data.route && data.route.length === 2) {
-            assignedRouteLine = L.polyline(data.route.map(p => [p.lat, p.lng]), { color: 'orange', weight: 6 }).addTo(map);
+          if (Array.isArray(data)) {
+            data.forEach((driverRoute, idx) => {
+              if (driverRoute.waypoints && driverRoute.waypoints.length > 1) {
+                const waypoints = driverRoute.waypoints.map(p => L.latLng(p.lat, p.lng));
+                const routeControl = L.Routing.control({
+                  waypoints: waypoints,
+                  lineOptions: { styles: [{ color: 'orange', weight: 6 }] },
+                  router: L.Routing.osrmv1({ profile: 'driving' }),
+                  addWaypoints: false,
+                  routeWhileDragging: false,
+                  showAlternatives: false,
+                  createMarker: function() { return null; }
+                }).addTo(map);
+                routeLines.push(routeControl);
+              }
+            });
           }
-        });
+        })
+        .catch(err => { });
     }
-    // Always fetch and show jeepney location
-    function fetchAndShowJeepneyLocation() {
+
+    document.getElementById("show-btn").onclick = () => {
+      drawSavedRoutes();
+      refreshRoutesList();
+    };
+
+    document.getElementById("highlight-btn").onclick = () => {
+      if (!userMarker) {
+        alert("Please start tracking your location first.");
+        return;
+      }
+      const userLatLng = userMarker.getLatLng();
+      let nearestRouteIdx = -1;
+      let minDist = Infinity;
+      fetch('/api/routes')
+        .then(res => {
+          if (!res.ok) throw new Error('Network response was not ok');
+          return res.json();
+        })
+        .then(data => {
+          if (Array.isArray(data)) {
+            data.forEach((driverRoute, idx) => {
+              if (driverRoute.waypoints && driverRoute.waypoints.length > 1) {
+                driverRoute.waypoints.forEach(pt => {
+                  const dist = map.distance(userLatLng, L.latLng(pt.lat, pt.lng));
+                  if (dist < minDist) {
+                    minDist = dist;
+                    nearestRouteIdx = idx;
+                  }
+                });
+              }
+            });
+          }
+          clearRoutes();
+          // Draw only nearest route
+          if (nearestRouteIdx !== -1 && data[nearestRouteIdx].waypoints) {
+            const waypoints = data[nearestRouteIdx].waypoints.map(p => L.latLng(p.lat, p.lng));
+            const highlightControl = L.Routing.control({
+              waypoints: waypoints,
+              lineOptions: { styles: [{ color: 'orange', weight: 8 }] },
+              router: L.Routing.osrmv1({ profile: 'driving' }),
+              addWaypoints: false,
+              routeWhileDragging: false,
+              showAlternatives: false,
+              createMarker: function() { return null; }
+            }).addTo(map);
+            routeLines.push(highlightControl);
+          }
+        })
+        .catch(err => { });
+    };
+
+    document.getElementById("clear-btn").onclick = () => {
+      routeLines.forEach(line => {
+        if (line && typeof line.remove === "function") {
+          line.remove();
+        } else if (line && typeof map.removeControl === "function") {
+          map.removeControl(line);
+        } else if (line && typeof map.removeLayer === "function") {
+          map.removeLayer(line);
+        }
+      });
+      routeLines = [];
+      refreshRoutesList();
+    };
+
+    function clearRoutes() {
+      routeLines.forEach(line => {
+        if (line && typeof line.remove === "function") {
+          line.remove();
+        } else if (line && typeof map.removeControl === "function") {
+          map.removeControl(line);
+        } else if (line && typeof map.removeLayer === "function") {
+          map.removeLayer(line);
+        }
+      });
+      routeLines = [];
+    }
+
+    document.getElementById("track-btn").onclick = () => {
+      if (userMarker) map.removeLayer(userMarker);
+      map.locate({ watch: true, setView: true, maxZoom: 15 });
+    };
+
+    map.on('locationfound', function(e) {
+      if (userMarker) map.removeLayer(userMarker);
+      userMarker = L.marker(e.latlng, { draggable: false }).addTo(map)
+        .bindPopup("You are here!").openPopup();
+      document.getElementById("location-status").textContent =
+        `Location detected (±${Math.round(e.accuracy)}m)`;
+    });
+
+    map.on('locationerror', function(e) {
+      document.getElementById("location-status").textContent = "Unable to detect location: " + e.message;
+    });
+
+    function pollJeepney() {
       fetch('/api/jeepney-location')
-        .then(res => res.json())
+        .then(res => {
+          if (!res.ok) throw new Error("Network response was not ok");
+          return res.json();
+        })
         .then(data => {
           if (data.location) {
             const latLng = [data.location.lat, data.location.lng];
@@ -90,27 +215,44 @@
             } else {
               jeepneyMarker.setLatLng(latLng);
             }
+          } else if (jeepneyMarker) {
+            map.removeLayer(jeepneyMarker);
+            jeepneyMarker = null;
           }
+        })
+        .catch(err => { });
+    }
+    setInterval(pollJeepney, 1000);
+
+    function refreshRoutesList() {
+      fetch('/api/routes')
+        .then(res => res.json())
+        .then(routes => {
+          const routesListDiv = document.getElementById("routes-list");
+          routesListDiv.innerHTML = '';
+          routes.forEach((routeObj, idx) => {
+            const div = document.createElement('div');
+            div.className = "route-info";
+            div.textContent = `Saved Route #${idx+1} (${routeObj.route.length} points)`;
+            const delBtn = document.createElement('button');
+            delBtn.textContent = "Delete";
+            delBtn.onclick = () => {
+              fetch(`/api/routes/${idx}`, { method: 'DELETE' })
+                .then(res => res.json())
+                .then(data => {
+                  alert(data.message || "Route deleted!");
+                  refreshRoutesList();
+                  document.getElementById("show-btn").click();
+                });
+            };
+            div.appendChild(delBtn);
+            routesListDiv.appendChild(div);
+          });
         });
     }
-    // Show all hardcoded routes for demo/testing
-    function showAllRoutes() {
-      demoRouteLines.forEach(line => map.removeLayer(line));
-      demoRouteLines = [];
-      jeepneyRoutes.forEach(route => {
-        const polyline = L.polyline(route.points, { color: route.color, weight: 4, opacity: 0.6 }).addTo(map);
-        demoRouteLines.push(polyline);
-      });
-      fetchAndDrawAssignedRoute(); // Re-draw assigned route so it's always visible
-    }
-
-    // Poll every second for live updates from backend
-    setInterval(fetchAndDrawAssignedRoute, 1000);
-    setInterval(fetchAndShowJeepneyLocation, 1000);
-
-    // On load, draw assigned route and jeepney if any
-    fetchAndDrawAssignedRoute();
-    fetchAndShowJeepneyLocation();
+    // Initial load
+    drawSavedRoutes();
+    refreshRoutesList();
   </script>
 </body>
 </html>

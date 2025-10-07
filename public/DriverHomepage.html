@@ -4,10 +4,8 @@
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1.0" />
 <title>Lakbay | Driver Dashboard</title>
-
 <link rel="stylesheet" href="https://unpkg.com/leaflet/dist/leaflet.css" />
 <link rel="stylesheet" href="https://unpkg.com/leaflet-routing-machine/dist/leaflet-routing-machine.css" />
-
 <style>
   body { margin:0; font-family: Arial,sans-serif; display:flex; flex-direction:column; height:100vh; }
   header { background:#f0f0f0; padding:10px 20px; }
@@ -18,13 +16,21 @@
   .map-container { flex:2; position:relative; }
   #map { width:100%; height:600px; border:2px solid #000; border-radius:8px; }
   .controls { margin-top:10px; }
-  #start-route { padding:10px 20px; background-color:#28a745; color:white; border:none; border-radius:5px; cursor:pointer; font-size:1em; }
+  #start-route, #save-route, #clear-waypoints { padding:10px 20px; margin-right:8px; border:none; border-radius:5px; cursor:pointer; font-size:1em; }
+  #start-route { background-color: #28a745; color:white; }
+  #save-route { background-color: #007bff; color:white; }
+  #clear-waypoints { background-color: #dc3545; color:white; }
   #start-route:hover { background-color:#218838; }
+  #save-route:hover { background-color:#0056b3; }
+  #clear-waypoints:hover { background-color:#b02a37; }
   #status { margin-top:10px; font-size:0.9em; color:gray; }
   .directions-container { flex:1; max-width:300px; overflow-y:auto; border:2px solid #000; border-radius:8px; padding:10px; height:600px; }
   .waypoint-item { display:flex; justify-content: space-between; align-items: center; margin-bottom:4px; }
   .delete-btn { background:#dc3545; color:white; border:none; border-radius:3px; cursor:pointer; padding:2px 5px; }
   .delete-btn:hover { background:#b02a37; }
+  #routes-list button { margin-left:12px; background:#dc3545; color:white; border:none; border-radius:4px; padding:3px 9px; cursor:pointer;}
+  #routes-list { margin-bottom:10px; }
+  .route-info { margin-bottom:4px; }
   footer { background:#f0f0f0; text-align:center; padding:10px 0; }
 </style>
 </head>
@@ -41,32 +47,31 @@
     </ul>
   </nav>
 </header>
-
 <main>
   <div class="map-container">
     <h1>Driver Dashboard</h1>
     <div id="map"></div>
     <div class="controls">
+      <button id="save-route">Save Route</button>
       <button id="start-route">Start Route</button>
-      <p id="status">Click on the map to add waypoints for your route.</p>
+      <button id="clear-waypoints">Clear Waypoints</button>
+      <p id="status">Click on the map to add waypoints for your route.<br>
+        You can save multiple routes. Only the most recent will animate the jeepney.</p>
     </div>
+    <div id="routes-list"></div>
   </div>
   <div class="directions-container" id="directions">
     <h3>Route Data for Commuter Dashboard</h3>
-<textarea id="route-data" rows="10" style="width:100%; resize:none;" readonly></textarea>
-
+    <textarea id="route-data" rows="10" style="width:100%; resize:none;" readonly></textarea>
     <h3>Waypoints</h3>
     <div id="waypoint-list"></div>
   </div>
 </main>
-
 <footer>
   <p>© 2025 Lakbay. All rights reserved.</p>
 </footer>
-
 <script src="https://unpkg.com/leaflet/dist/leaflet.js"></script>
-<script src="https://unpkg.com/leaflet-routing-machine/dist/leaflet-routing-machine.min.js"></script>
-
+<script src="https://unpkg.com/leaflet-routing-machine/dist/leaflet-routing-machine.js"></script>
 <script>
 const map = L.map('map').setView([14.796, 120.879], 15);
 L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
@@ -75,15 +80,17 @@ L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
 
 const status = document.getElementById("status");
 const startButton = document.getElementById("start-route");
+const saveButton = document.getElementById("save-route");
+const clearButton = document.getElementById("clear-waypoints");
 const waypointList = document.getElementById("waypoint-list");
-
+const routesListDiv = document.getElementById("routes-list");
 let waypoints = [];
 let markers = [];
 let routingControl = null;
 let jeepMarker = null;
 let routeLatLngs = [];
+let snappedRoute = [];
 
-// Jeepney icon
 const jeepIcon = L.icon({
   iconUrl: 'icons/Jeep.png', 
   iconSize: [32, 32],
@@ -95,36 +102,30 @@ map.on('click', (e) => {
   const latlng = e.latlng;
   waypoints.push(latlng);
 
-  // Update previous latest marker to blue if it's not first
   if (markers.length > 0) {
     const prev = markers[markers.length - 1];
     if (markers.length > 1) {
       prev.setStyle({ color: 'blue', fillColor: 'blue' });
     }
   }
-
-  // Determine color: first = red, latest = yellow
   let color = markers.length === 0 ? 'red' : 'yellow';
-
   const circleMarker = L.circleMarker(latlng, {
     radius: 8,
     color: color,
     fillColor: color,
     fillOpacity: 1
   }).addTo(map);
-
   markers.push(circleMarker);
   renderWaypointList();
 });
 
-// Render waypoint list with delete buttons
 function renderWaypointList() {
   waypointList.innerHTML = "";
   waypoints.forEach((wp, index) => {
     const div = document.createElement("div");
     div.className = "waypoint-item";
     const span = document.createElement("span");
-      span.textContent = `Waypoint ${index+1}: ${wp.lat.toFixed(5)}, ${wp.lng.toFixed(5)}`;
+    span.textContent = `Waypoint ${index+1}: ${wp.lat.toFixed(5)}, ${wp.lng.toFixed(5)}`;
     const delBtn = document.createElement("button");
     delBtn.textContent = "×";
     delBtn.className = "delete-btn";
@@ -140,14 +141,11 @@ function renderWaypointList() {
     waypointList.appendChild(div);
   });
 
-  // Generate formatted JSON for commuter dashboard
   const routeArray = waypoints.map(wp => [wp.lat, wp.lng]);
-  // Create a pretty-printed JSON string
   const routeJSON = JSON.stringify(routeArray.map(p => [Number(p[0].toFixed(5)), Number(p[1].toFixed(5))]), null, 2);
   document.getElementById("route-data").value = routeJSON;
 }
 
-// Update first/yellow/green marker colors after deletion
 function updateMarkerColors() {
   markers.forEach((marker, idx) => {
     if (idx === 0) marker.setStyle({ color: 'red', fillColor: 'red' });
@@ -156,26 +154,21 @@ function updateMarkerColors() {
   });
 }
 
-// Start route button
-startButton.addEventListener("click", () => {
+// Save Route button: snaps to roads, stores snapped coordinates AND original waypoints to backend for multiple routes
+saveButton.addEventListener("click", () => {
   if (waypoints.length < 2) {
     alert("Add at least 2 waypoints.");
     return;
   }
-
   if (routingControl) map.removeControl(routingControl);
 
-  // Remove intermediate markers, keep first & last
   markers.forEach((marker, index) => {
     if (index !== 0 && index !== markers.length - 1) {
       map.removeLayer(marker);
     }
   });
-
-  // Last marker turns green
   const lastMarker = markers[markers.length - 1];
   lastMarker.setStyle({ color: 'green', fillColor: 'green' });
-
   markers = [markers[0], lastMarker];
 
   routingControl = L.Routing.control({
@@ -190,26 +183,101 @@ startButton.addEventListener("click", () => {
 
   routingControl.on('routesfound', function(e) {
     routeLatLngs = e.routes[0].coordinates;
-    if (jeepMarker) map.removeLayer(jeepMarker);
-    jeepMarker = L.marker([routeLatLngs[0].lat, routeLatLngs[0].lng], { icon: jeepIcon }).addTo(map);
-    status.textContent = "Route started! Jeepney is moving...";
-    moveJeep();
+    snappedRoute = routeLatLngs.map(latlng => ({ lat: latlng.lat, lng: latlng.lng }));
+    // Send BOTH waypoints and snapped route to backend
+    fetch('/api/routes', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        waypoints: waypoints.map(wp => ({lat: wp.lat, lng: wp.lng})),
+        route: snappedRoute
+      })
+    }).then(() => {
+      status.textContent = "Route snapped to road and saved!";
+      refreshRoutesList();
+    });
   });
 });
 
-// Move jeep along route
+// Start Route button: animates jeepney and updates commuter dashboard live on the last snapped route
+startButton.addEventListener("click", () => {
+  if (snappedRoute.length < 2) {
+    status.textContent = "Please save the route first!";
+    return;
+  }
+  if (jeepMarker) map.removeLayer(jeepMarker);
+  jeepMarker = L.marker([snappedRoute[0].lat, snappedRoute[0].lng], { icon: jeepIcon }).addTo(map);
+  status.textContent = "Route started! Jeepney is moving...";
+  moveJeep();
+});
+
+// Clear waypoints and markers
+clearButton.addEventListener("click", () => {
+  waypoints = [];
+  snappedRoute = [];
+  routeLatLngs = [];
+  markers.forEach(marker => map.removeLayer(marker));
+  markers = [];
+  if (routingControl) map.removeControl(routingControl);
+  routingControl = null;
+  if (jeepMarker) map.removeLayer(jeepMarker);
+  jeepMarker = null;
+  renderWaypointList();
+  status.textContent = "Waypoints cleared. Start drawing a new route!";
+});
+
+// Move jeep along route and POST position to backend
 function moveJeep() {
   let i = 0;
+  if (snappedRoute.length === 0) return;
+  fetch('/api/jeepney-location', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ lat: snappedRoute[0].lat, lng: snappedRoute[0].lng })
+  });
+
   const interval = setInterval(() => {
     i++;
-    if (i >= routeLatLngs.length) {
+    if (i >= snappedRoute.length) {
       clearInterval(interval);
       status.textContent = "Jeepney reached the end of the route.";
       return;
     }
-    jeepMarker.setLatLng([routeLatLngs[i].lat, routeLatLngs[i].lng]);
+    jeepMarker.setLatLng([snappedRoute[i].lat, snappedRoute[i].lng]);
+    fetch('/api/jeepney-location', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ lat: snappedRoute[i].lat, lng: snappedRoute[i].lng })
+    });
   }, 1000);
 }
+
+// Show list of routes with delete buttons
+function refreshRoutesList() {
+  fetch('/api/routes')
+    .then(res => res.json())
+    .then(routes => {
+      routesListDiv.innerHTML = '';
+      routes.forEach((routeObj, idx) => {
+        const div = document.createElement('div');
+        div.className = "route-info";
+        div.textContent = `Route #${idx+1} (${routeObj.route.length} points)`;
+        const delBtn = document.createElement('button');
+        delBtn.textContent = "Delete";
+        delBtn.onclick = () => {
+          fetch(`/api/routes/${idx}`, { method: 'DELETE' })
+            .then(res => res.json())
+            .then(data => {
+              alert(data.message || "Route deleted!");
+              refreshRoutesList();
+            });
+        };
+        div.appendChild(delBtn);
+        routesListDiv.appendChild(div);
+      });
+    });
+}
+refreshRoutesList();
 </script>
 </body>
 </html>
