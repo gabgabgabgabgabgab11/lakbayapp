@@ -1,0 +1,354 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Lakbay | Commuter Dashboard</title>
+
+  <!-- Leaflet CSS -->
+  <link rel="stylesheet" href="https://unpkg.com/leaflet/dist/leaflet.css" />
+  <link rel="stylesheet" href="https://unpkg.com/leaflet-routing-machine/dist/leaflet-routing-machine.css" />
+
+  <style>
+    body {
+      margin: 0;
+      font-family: Arial, sans-serif;
+      display: flex;
+      flex-direction: column;
+      height: 100vh;
+    }
+
+    header {
+      background: #f0f0f0;
+      padding: 10px 20px;
+    }
+
+    nav {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+    }
+
+    nav ul {
+      list-style: none;
+      display: flex;
+      gap: 15px;
+      padding: 0;
+      margin: 0;
+    }
+
+    nav a {
+      text-decoration: none;
+      color: #000;
+    }
+
+    main {
+      flex: 1;
+      display: flex;
+      justify-content: center;
+      align-items: center;
+      flex-direction: column;
+    }
+
+    .map-section {
+      text-align: center;
+      width: 80%;
+      max-width: 900px;
+    }
+
+    #map {
+      width: 100%;
+      height: 500px;
+      border: 2px solid #000;
+      margin-top: 20px;
+      border-radius: 8px;
+    }
+
+    #start-tracking {
+      margin-top: 15px;
+      padding: 10px 20px;
+      background-color: #007bff;
+      color: white;
+      border: none;
+      border-radius: 5px;
+      cursor: pointer;
+      font-size: 1em;
+    }
+
+    #start-tracking:hover {
+      background-color: #0056b3;
+    }
+
+    #location-status {
+      margin-top: 10px;
+      font-size: 0.9em;
+      color: gray;
+    }
+
+    footer {
+      background: #f0f0f0;
+      text-align: center;
+      padding: 10px 0;
+    }
+  </style>
+</head>
+<body>
+  <!-- Header -->
+  <header>
+    <nav>
+      <div class="logo">
+        <h2>Lakbay</h2>
+      </div>
+      <ul class="nav-links">
+        <li><a href="/">Home</a></li>
+        <li><a href="#">Routes</a></li>
+        <li><a href="#">Saved Trips</a></li>
+        <li><a href="#">Help</a></li>
+        <li><a href="index.html">Logout</a></li>
+      </ul>
+    </nav>
+  </header>
+
+  <!-- Main Content -->
+  <main>
+    <section class="map-section">
+      <h1>Commuter Dashboard</h1>
+      <p>Track your current location and plan your route along major roads.</p>
+
+      <div id="map"></div>
+      <button id="start-tracking">Start Tracking My Location Now</button>
+      <p id="location-status">Waiting to start...</p>
+    </section>
+  </main>
+
+  <!-- Footer -->
+  <footer>
+    <p>© 2025 Lakbay. All rights reserved.</p>
+  </footer>
+
+  <!-- Leaflet JS -->
+  <script src="https://unpkg.com/leaflet/dist/leaflet.js"></script>
+  <script src="https://unpkg.com/leaflet-routing-machine/dist/leaflet-routing-machine.min.js"></script>
+
+ <script>
+  // --- Global variables ---
+  const map = L.map('map').setView([14.7959, 120.8789], 14);
+  L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+    attribution: '&copy; OpenStreetMap contributors'
+  }).addTo(map);
+
+  const statusText = document.getElementById("location-status");
+  const startButton = document.getElementById("start-tracking");
+  let userMarker = null, watchId = null, lastUserLatLng = null;
+  let routingControl = null;
+  let destinationMarker = null;
+
+  // --- Hardcoded jeepney routes ---
+  const jeepneyRoutes = [
+    { name: "Route 1", points: [[14.7960,120.8750],[14.7980,120.8780],[14.8000,120.8800]], color: "orange" },
+    { name: "Route 2", points: [[14.7950,120.8800],[14.7970,120.8830],[14.7990,120.8850]], color: "green" }
+  ];
+
+  const routeLines = [];
+
+  // --- Jeepney route functions ---
+  function drawJeepneyRoutes() {
+    routeLines.forEach(line => map.removeLayer(line)); // clear previous if any
+    routeLines.length = 0; // reset array
+    jeepneyRoutes.forEach(route => {
+      const polyline = L.polyline(route.points, { color: route.color, weight: 4, opacity: 0.6 }).addTo(map);
+      routeLines.push(polyline);
+    });
+    statusText.textContent = "All jeepney routes displayed.";
+  }
+
+  function highlightNearestRoute() {
+    if (!lastUserLatLng) { alert("Please allow location first."); return; }
+
+    let nearestRoute = null;
+    let minDist = Infinity;
+
+    jeepneyRoutes.forEach(route => {
+      route.points.forEach(pt => {
+        const dist = map.distance([lastUserLatLng.lat,lastUserLatLng.lng], pt);
+        if(dist < minDist){ minDist = dist; nearestRoute = route; }
+      });
+    });
+
+    if(nearestRoute){
+      routeLines.forEach(line => line.setStyle({ opacity:0.6, weight:4 }));
+      const idx = jeepneyRoutes.indexOf(nearestRoute);
+      routeLines[idx].setStyle({ opacity:1, weight:6 });
+      statusText.textContent = `Nearest route: ${nearestRoute.name} (${Math.round(minDist)} m away)`;
+    }
+  }
+
+  function clearDestination() {
+    if(destinationMarker) map.removeLayer(destinationMarker);
+    if(routingControl) map.removeControl(routingControl);
+    destinationMarker = null; routingControl = null;
+    statusText.textContent = "Destination cleared.";
+  }
+
+  // --- Add buttons ---
+  const btnContainer = document.createElement("div");
+  btnContainer.style.marginTop = "10px";
+
+  const showRoutesBtn = document.createElement("button");
+  showRoutesBtn.textContent = "Show All Routes";
+  showRoutesBtn.style.marginRight = "10px";
+  showRoutesBtn.onclick = drawJeepneyRoutes;
+
+  const nearestRouteBtn = document.createElement("button");
+  nearestRouteBtn.textContent = "Highlight Nearest Route";
+  nearestRouteBtn.style.marginRight = "10px";
+  nearestRouteBtn.onclick = highlightNearestRoute;
+
+  const clearDestBtn = document.createElement("button");
+  clearDestBtn.textContent = "Clear Destination";
+  clearDestBtn.onclick = clearDestination;
+
+  btnContainer.appendChild(showRoutesBtn);
+  btnContainer.appendChild(nearestRouteBtn);
+  btnContainer.appendChild(clearDestBtn);
+  document.querySelector(".map-section").appendChild(btnContainer);
+
+  // --- Update or create user marker ---
+  function updateUserLocation(lat, lng, accuracy) {
+    const coords = [lat, lng];
+    lastUserLatLng = { lat, lng };
+
+    if (!userMarker) {
+      userMarker = L.marker(coords).addTo(map).bindPopup("You are here!").openPopup();
+    } else {
+      userMarker.setLatLng(coords);
+    }
+
+    map.setView(coords, 15);
+    statusText.textContent = `Location detected (±${Math.round(accuracy)}m)`;
+  }
+
+  // --- Handle geolocation errors ---
+  function handleLocationError(error) {
+    switch (error.code) {
+      case error.PERMISSION_DENIED:
+        statusText.textContent = "Permission denied. Please enable location access.";
+        break;
+      case error.POSITION_UNAVAILABLE:
+        statusText.textContent = "Location unavailable.";
+        break;
+      case error.TIMEOUT:
+        statusText.textContent = "Request timed out.";
+        break;
+      default:
+        statusText.textContent = "An unknown error occurred.";
+    }
+  }
+
+  // --- Create route ---
+  function createRoute(startLatLng, destLatLng) {
+    return new Promise((resolve, reject) => {
+      if (routingControl) map.removeControl(routingControl);
+
+      const customRouter = L.Routing.osrmv1({
+        serviceUrl: 'https://router.project-osrm.org/route/v1',
+        profile: 'driving',
+        alternatives: false,
+        steps: true,
+        geometries: 'polyline'
+      });
+
+      routingControl = L.Routing.control({
+        waypoints: [
+          L.latLng(startLatLng.lat, startLatLng.lng),
+          L.latLng(destLatLng.lat, destLatLng.lng)
+        ],
+        lineOptions: { styles: [{ color: '#007bff', weight: 5 }] },
+        router: customRouter,
+        addWaypoints: false,
+        routeWhileDragging: false,
+        showAlternatives: false
+      }).addTo(map);
+
+      routingControl.on('routesfound', function(e) {
+        const route = e.routes[0].summary;
+        const distKm = (route.totalDistance / 1000).toFixed(2);
+        const timeMin = Math.round(route.totalTime / 60);
+        statusText.textContent = `Route found: ${distKm} km — ETA ${timeMin} min`;
+        resolve();
+      });
+
+      routingControl.on('routingerror', () => {
+        reject();
+      });
+    });
+  }
+
+  // --- Start/stop tracking ---
+  startButton.addEventListener("click", () => {
+    if (!navigator.geolocation) {
+      statusText.textContent = "Geolocation is not supported by your browser.";
+      return;
+    }
+
+    if (watchId) {
+      navigator.geolocation.clearWatch(watchId);
+      watchId = null;
+      startButton.textContent = "Start Tracking My Location Now";
+      statusText.textContent = "Tracking stopped.";
+    } else {
+      watchId = navigator.geolocation.watchPosition(
+        (pos) => {
+          const { latitude, longitude, accuracy } = pos.coords;
+          updateUserLocation(latitude, longitude, accuracy);
+        },
+        handleLocationError,
+        { enableHighAccuracy: true }
+      );
+      startButton.textContent = "Stop Tracking";
+      statusText.textContent = "Tracking started...";
+    }
+  });
+
+  // --- Click map to select destination ---
+  map.on('click', (e) => {
+    if (!lastUserLatLng) {
+      alert("Waiting for your location to be detected...");
+      return;
+    }
+
+    const destinationLatLng = e.latlng;
+
+    // Remove previous destination marker if it exists
+    if (destinationMarker) map.removeLayer(destinationMarker);
+
+    // Place a new destination marker instantly
+    destinationMarker = L.marker(destinationLatLng, { opacity: 0.8 })
+      .addTo(map)
+      .bindPopup("Destination selected!")
+      .openPopup();
+
+    // Show blinking "calculating" status
+    let blink = true;
+    statusText.textContent = "Calculating best route, please wait...";
+    const blinkInterval = setInterval(() => {
+      statusText.style.visibility = blink ? "visible" : "hidden";
+      blink = !blink;
+    }, 500);
+
+    // Calculate the route
+    createRoute(lastUserLatLng, { lat: destinationLatLng.lat, lng: destinationLatLng.lng })
+      .then(() => {
+        clearInterval(blinkInterval);
+        statusText.style.visibility = "visible";
+      })
+      .catch(() => {
+        clearInterval(blinkInterval);
+        statusText.style.visibility = "visible";
+        statusText.textContent = "Routing failed. Try another destination.";
+      });
+  });
+</script>
+
+</body>
+</html>
